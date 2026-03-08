@@ -33,8 +33,9 @@ Configuration ESPHome complète pour un système de surveillance et d'arrosage i
 │ [Serre] │ Onglet 0 — SERRE                                        │
 │ [Semis] │   · Horloge HH:MM (SNTP, fuseau Europe/Paris)           │
 │ [Eau]   │   · Saint du jour (API nameday.abalin.net)              │
-│         │   · Température BLE : --.-°C                            │
-│ [WiFi]  │   · Humidité BLE    : ---%                              │
+│         │   · Température BLE (int.) : --.-°C                    │
+│ [WiFi]  │   · Température ext. (HA) : --.-°C                      │
+│         │   · Humidité BLE          : ---%                        │
 │         ├──────────────────────────────────────────────────────────┤
 │         │ Onglet 1 — SEMIS                                        │
 │         │   · Zone NFC / infos plantes (placeholder)              │
@@ -77,6 +78,7 @@ Configuration ESPHome complète pour un système de surveillance et d'arrosage i
 | `sensor.smart_irrigation_massifs` | Smart Irrigation | Durée Zone 2 |
 | `sensor.smart_irrigation_gazon` | Smart Irrigation | Durée Zone 3 |
 | `sensor.smart_irrigation_serre_ext` | Smart Irrigation | Durée Zone 4 |
+| `sensor.auriol_4ld5661_136_temperature` | Home Assistant | Température extérieure (onglet Serre) |
 | `switch.arrosage_zone1` à `zone4` | arrosage-jardin | État vanne (indicateur coloré) |
 
 ### Services HA appelés depuis l'écran
@@ -182,6 +184,23 @@ Pour générer une clé API ESPHome :
 ```bash
 python3 -c "import secrets, base64; print(base64.b64encode(secrets.token_bytes(32)).decode())"
 ```
+
+### 2 bis. Validation de configuration (recommandée)
+
+Avant le premier flash, valider les deux fichiers pour détecter les erreurs YAML / composants manquants :
+
+```bash
+esphome config armoire-semis.yaml
+esphome config arrosage-jardin.yaml
+```
+
+Si `secrets.yaml` n'existe pas encore, l'initialiser depuis le template **sans écraser un fichier existant** :
+
+```bash
+cp -n secrets.yaml.template secrets.yaml
+```
+
+> Option si la commande `esphome` n'est pas installée localement : exécuter ces vérifications depuis l'add-on ESPHome de Home Assistant ou un conteneur Docker ESPHome.
 
 ### 3. Flasher armoire-semis
 
