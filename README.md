@@ -183,6 +183,21 @@ Pour générer une clé API ESPHome :
 python3 -c "import secrets, base64; print(base64.b64encode(secrets.token_bytes(32)).decode())"
 ```
 
+### 2bis. Validation de configuration (recommandé)
+
+Avant le premier flash, valider les deux fichiers pour détecter les erreurs YAML / composants manquants :
+
+```bash
+esphome config armoire-semis.yaml
+esphome config arrosage-jardin.yaml
+```
+
+Si `secrets.yaml` n'existe pas encore, dupliquer le template puis compléter les valeurs :
+
+```bash
+cp secrets.yaml.template secrets.yaml
+```
+
 ### 3. Flasher armoire-semis
 
 ```bash
