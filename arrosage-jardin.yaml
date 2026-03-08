@@ -1,0 +1,410 @@
+# ═══════════════════════════════════════════════════════════════
+# arrosage-jardin.yaml — ESPHome 2026.x
+# Device dédié contrôle arrosage jardin
+#
+# Hardware cible : ESP32-WROOM-32 (38 pins) — recommandé
+#   → NodeMCU-32S, AZ-Delivery ESP32, ou équivalent
+#
+# Sorties :
+#   GPIO26 → Relais Zone 1 (Potager)      — vanne 12V DC
+#   GPIO27 → Relais Zone 2 (Massifs)      — vanne 12V DC
+#   GPIO14 → Relais Zone 3 (Gazon)        — vanne 12V DC
+#   GPIO12 → Relais Zone 4 (Serre ext.)   — vanne 12V DC
+#   GPIO13 → Relais Pompe (12V DC)        — s'active avec toute zone
+#
+# Entrées :
+#   GPIO34 → Débitmètre YF-S201 (pulse)   — comptage litres
+#   GPIO35 → [RÉSERVÉ] Sonde humidité sol (capacitif ou résistif)
+#
+# Sécurités :
+#   - La pompe ne peut s'allumer que si au moins une zone est active
+#   - La pompe s'éteint automatiquement si toutes les zones s'éteignent
+#   - Timeout de sécurité : 60 min max par zone (évite la noyade)
+#   - Une seule zone active à la fois (vannes séquentielles)
+#
+# Entités exposées dans HA (utilisées par armoire-semis) :
+#   switch.arrosage_zone1 à zone4
+#   switch.arrosage_pompe
+#   sensor.arrosage_debit          (L/min)
+#   sensor.arrosage_volume_session (L depuis dernier reset)
+#   sensor.arrosage_volume_total   (L cumulé — persistant NVS)
+# ═══════════════════════════════════════════════════════════════
+
+substitutions:
+  device_name: arrosage-jardin
+  friendly_name: "Arrosage Jardin"
+
+  # ── GPIO Relais (actif LOW = relais standard chinois)
+  # Si vos relais sont actif HIGH, passez inverted à false
+  gpio_zone1: "26"
+  gpio_zone2: "27"
+  gpio_zone3: "14"
+  gpio_zone4: "12"
+  gpio_pompe: "13"
+
+  # ── GPIO Capteurs
+  gpio_debit: "34"       # YF-S201 : signal pulse
+  gpio_sol: "35"         # Sonde humidité sol (ADC) — non câblé pour l'instant
+
+  # ── Calibration débitmètre
+  # YF-S201 : 7.5 pulses/seconde = 1 L/min → facteur = 1/7.5 = 0.1333
+  # À ajuster selon votre modèle (voir étiquette ou datasheet)
+  debit_facteur: "0.1333"
+
+  # ── Timeout sécurité par zone (secondes)
+  timeout_zone: "3600"   # 60 minutes max
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      # S'assurer que tout est éteint au démarrage
+      - switch.turn_off: zone1
+      - switch.turn_off: zone2
+      - switch.turn_off: zone3
+      - switch.turn_off: zone4
+      - switch.turn_off: pompe
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+# ─────────────────────────
+# Connectivité
+# ─────────────────────────
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true
+  ap:
+    ssid: "Arrosage-Fallback"
+    password: !secret ap_password
+
+captive_portal:
+
+logger:
+  level: INFO
+
+api:
+  encryption:
+    key: !secret arrosage_api_key
+
+ota:
+  - platform: esphome
+    password: !secret arrosage_ota_password
+
+mdns:
+
+safe_mode:
+  reboot_timeout: 10min
+  num_attempts: 5
+
+# ─────────────────────────
+# Persistance volume total (NVS flash)
+# ─────────────────────────
+
+globals:
+  - id: volume_total
+    type: float
+    restore_value: true
+    initial_value: "0.0"
+
+  - id: volume_session
+    type: float
+    restore_value: false
+    initial_value: "0.0"
+
+  - id: zone_active
+    type: int
+    restore_value: false
+    initial_value: "0"   # 0 = aucune, 1-4 = zone active
+
+# ─────────────────────────
+# DÉBITMÈTRE — YF-S201
+# Pulse counter : chaque front montant = 1 pulse
+# ─────────────────────────
+
+sensor:
+
+  - platform: pulse_counter
+    pin:
+      number: ${gpio_debit}
+      mode:
+        input: true
+        pullup: true
+    id: debit_brut
+    name: "Arrosage Débit brut"
+    internal: true
+    unit_of_measurement: "pulses/min"
+    update_interval: 10s
+    filters:
+      - lambda: return x;
+    on_value:
+      then:
+        - lambda: |-
+            // Convertir pulses/min → L/min
+            float lpm = x * ${debit_facteur};
+            id(debit_lpm).publish_state(lpm);
+            // Accumuler volume : L/min × (10s/60) = litres sur la période
+            float litres = lpm * (10.0 / 60.0);
+            id(volume_session) += litres;
+            id(volume_total) += litres;
+            id(vol_session_sensor).publish_state(id(volume_session));
+            id(vol_total_sensor).publish_state(id(volume_total));
+
+  - platform: template
+    id: debit_lpm
+    name: "Arrosage Débit"
+    unit_of_measurement: "L/min"
+    device_class: volume_flow_rate
+    state_class: measurement
+    accuracy_decimals: 1
+    icon: "mdi:water-pump"
+
+  - platform: template
+    id: vol_session_sensor
+    name: "Arrosage Volume session"
+    unit_of_measurement: "L"
+    device_class: water
+    state_class: total_increasing
+    accuracy_decimals: 2
+    icon: "mdi:water"
+
+  - platform: template
+    id: vol_total_sensor
+    name: "Arrosage Volume total"
+    unit_of_measurement: "L"
+    device_class: water
+    state_class: total_increasing
+    accuracy_decimals: 2
+    icon: "mdi:water-boiler"
+
+  # ── WiFi RSSI (diagnostic)
+  - platform: wifi_signal
+    name: "Arrosage WiFi RSSI"
+    update_interval: 60s
+    entity_category: diagnostic
+
+  # ─────────────────────────────────────────────────────────────
+  # SONDE HUMIDITÉ SOL — PLACEHOLDER (non câblé)
+  #
+  # Décommentez quand la sonde sera connectée sur GPIO35.
+  # Sonde capacitive (ex: STEMMA, Capacitive v1.2) :
+  #   - Valeur brute ~3300 = sec, ~1200 = saturé
+  #   - Calibrer min/max selon votre sonde dans les filtres
+  # ─────────────────────────────────────────────────────────────
+
+  # - platform: adc
+  #   pin: ${gpio_sol}
+  #   id: sol_brut
+  #   name: "Humidité sol brut"
+  #   internal: true
+  #   attenuation: 12db
+  #   update_interval: 60s
+  #   filters:
+  #     - calibrate_linear:
+  #         - 3300 -> 0.0     # sec
+  #         - 1200 -> 100.0   # saturé
+  #     - clamp:
+  #         min_value: 0
+  #         max_value: 100
+  # - platform: template
+  #   name: "Humidité sol"
+  #   id: sol_humidite
+  #   unit_of_measurement: "%"
+  #   device_class: moisture
+  #   state_class: measurement
+  #   accuracy_decimals: 0
+  #   icon: "mdi:water-percent"
+  #   lambda: return id(sol_brut).state;
+
+# ─────────────────────────
+# BINARY SENSORS — état vannes (pour HA)
+# ─────────────────────────
+
+binary_sensor:
+
+  - platform: template
+    id: zone_running
+    name: "Arrosage En cours"
+    device_class: running
+    lambda: return id(zone_active) > 0;
+    icon: "mdi:sprinkler"
+
+# ─────────────────────────
+# SWITCHES — Vannes + Pompe
+#
+# Logique de sécurité intégrée :
+#   ON  d'une zone → éteint les autres zones → allume la pompe
+#   OFF d'une zone → éteint la pompe si aucune autre zone active
+#   Timeout automatique après ${timeout_zone} secondes
+# ─────────────────────────
+
+switch:
+
+  # ── ZONE 1 — Potager
+  - platform: gpio
+    id: zone1
+    name: "Arrosage Zone 1"
+    icon: "mdi:sprinkler-variant"
+    pin:
+      number: ${gpio_zone1}
+      inverted: true   # relais actif LOW (standard modules chinois)
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      then:
+        # Éteindre les autres zones (séquentiel)
+        - switch.turn_off: zone2
+        - switch.turn_off: zone3
+        - switch.turn_off: zone4
+        # Mémoriser la zone active et reset volume session
+        - lambda: |-
+            id(zone_active) = 1;
+            id(volume_session) = 0.0;
+            id(vol_session_sensor).publish_state(0.0);
+        # Allumer la pompe
+        - switch.turn_on: pompe
+        # Timeout sécurité
+        - delay: !lambda return ${timeout_zone} * 1000;
+        - switch.turn_off: zone1
+    on_turn_off:
+      then:
+        - lambda: |-
+            if (id(zone_active) == 1) id(zone_active) = 0;
+        - script.execute: check_pompe
+
+  # ── ZONE 2 — Massifs
+  - platform: gpio
+    id: zone2
+    name: "Arrosage Zone 2"
+    icon: "mdi:sprinkler-variant"
+    pin:
+      number: ${gpio_zone2}
+      inverted: true
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      then:
+        - switch.turn_off: zone1
+        - switch.turn_off: zone3
+        - switch.turn_off: zone4
+        - lambda: |-
+            id(zone_active) = 2;
+            id(volume_session) = 0.0;
+            id(vol_session_sensor).publish_state(0.0);
+        - switch.turn_on: pompe
+        - delay: !lambda return ${timeout_zone} * 1000;
+        - switch.turn_off: zone2
+    on_turn_off:
+      then:
+        - lambda: |-
+            if (id(zone_active) == 2) id(zone_active) = 0;
+        - script.execute: check_pompe
+
+  # ── ZONE 3 — Gazon
+  - platform: gpio
+    id: zone3
+    name: "Arrosage Zone 3"
+    icon: "mdi:sprinkler-variant"
+    pin:
+      number: ${gpio_zone3}
+      inverted: true
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      then:
+        - switch.turn_off: zone1
+        - switch.turn_off: zone2
+        - switch.turn_off: zone4
+        - lambda: |-
+            id(zone_active) = 3;
+            id(volume_session) = 0.0;
+            id(vol_session_sensor).publish_state(0.0);
+        - switch.turn_on: pompe
+        - delay: !lambda return ${timeout_zone} * 1000;
+        - switch.turn_off: zone3
+    on_turn_off:
+      then:
+        - lambda: |-
+            if (id(zone_active) == 3) id(zone_active) = 0;
+        - script.execute: check_pompe
+
+  # ── ZONE 4 — Serre ext.
+  - platform: gpio
+    id: zone4
+    name: "Arrosage Zone 4"
+    icon: "mdi:sprinkler-variant"
+    pin:
+      number: ${gpio_zone4}
+      inverted: true
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      then:
+        - switch.turn_off: zone1
+        - switch.turn_off: zone2
+        - switch.turn_off: zone3
+        - lambda: |-
+            id(zone_active) = 4;
+            id(volume_session) = 0.0;
+            id(vol_session_sensor).publish_state(0.0);
+        - switch.turn_on: pompe
+        - delay: !lambda return ${timeout_zone} * 1000;
+        - switch.turn_off: zone4
+    on_turn_off:
+      then:
+        - lambda: |-
+            if (id(zone_active) == 4) id(zone_active) = 0;
+        - script.execute: check_pompe
+
+  # ── POMPE — contrôlée automatiquement, mais exposée dans HA
+  - platform: gpio
+    id: pompe
+    name: "Arrosage Pompe"
+    icon: "mdi:pump"
+    pin:
+      number: ${gpio_pompe}
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+# ─────────────────────────
+# SCRIPT — Vérifier si la pompe doit s'arrêter
+# Appelé à chaque extinction de zone
+# ─────────────────────────
+
+script:
+  - id: check_pompe
+    then:
+      - lambda: |-
+          // Si aucune zone n'est active, éteindre la pompe
+          if (!id(zone1).state &&
+              !id(zone2).state &&
+              !id(zone3).state &&
+              !id(zone4).state) {
+            id(zone_active) = 0;
+          }
+      - if:
+          condition:
+            lambda: return id(zone_active) == 0;
+          then:
+            - switch.turn_off: pompe
+
+# ─────────────────────────
+# SERVICES HA PERSONNALISÉS
+# Permettent d'appeler depuis HA ou l'écran :
+#   esphome.arrosage_jardin_reset_volume_session
+#   esphome.arrosage_jardin_reset_volume_total
+# ─────────────────────────
+
+  - id: reset_volume_session
+    then:
+      - lambda: |-
+          id(volume_session) = 0.0;
+          id(vol_session_sensor).publish_state(0.0);
+
+  - id: reset_volume_total
+    then:
+      - lambda: |-
+          id(volume_total) = 0.0;
+          id(vol_total_sensor).publish_state(0.0);

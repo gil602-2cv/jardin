@@ -1,0 +1,1254 @@
+substitutions:
+  device_name: armoire-semis
+  friendly_name: "Armoire Semis Pro"
+  api_encryption_key: "MMURdF0sL6kRkmRyBkeVOQ/c889Mt7hIORi8Lv33gkI="
+  ota_password_clear: "548fc2a8712b3c4aaaec769efdabe89d"
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      - switch.turn_on: back_light
+      - script.execute: update_nameday
+
+esp32:
+  board: esp32s3box
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+api:
+  encryption:
+    key: ${api_encryption_key}
+
+ota:
+  - platform: esphome
+    password: ${ota_password_clear}
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true
+
+logger:
+
+# ─────────────────────────
+# HTTP
+# ─────────────────────────
+
+http_request:
+  verify_ssl: false
+
+# ─────────────────────────
+# I2C + CH422G
+# ─────────────────────────
+
+i2c:
+  sda: GPIO08
+  scl: GPIO09
+
+ch422g:
+  - id: ch422g_hub
+
+# ─────────────────────────
+# BACKLIGHT — CH422G pin 2
+# Sur l'ESP32-S3-Touch-LCD-7, le rétroéclairage est câblé sur le
+# CH422G (IO expander I2C), pin 2. Ce chip ne supporte PAS le PWM :
+# le contrôle est uniquement ON/OFF.
+# Exposé comme switch dans HA pour allumer/éteindre l'écran.
+# ─────────────────────────
+
+switch:
+  - platform: gpio
+    id: back_light
+    name: "Retroeclairage"
+    pin:
+      ch422g: ch422g_hub
+      number: 2
+      mode:
+        output: true
+      inverted: false
+    restore_mode: ALWAYS_ON
+
+# ─────────────────────────
+# TIME
+# ─────────────────────────
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Paris
+    on_time:
+      - seconds: 0
+        then:
+          - lvgl.label.update:
+              id: lbl_time
+              text: !lambda 'return id(sntp_time).now().strftime("%H:%M");'
+      - hours: 0
+        minutes: 0
+        seconds: 2
+        then:
+          - script.execute: update_nameday
+
+# ─────────────────────────
+# DISPLAY — timings Waveshare 7" 800x480
+# ─────────────────────────
+
+display:
+  - platform: mipi_rgb
+    id: main_display
+    model: ESP32-S3-TOUCH-LCD-7-800X480
+
+    dimensions:
+      width: 800
+      height: 480
+
+    hsync_pulse_width: 10
+    hsync_back_porch: 20
+    hsync_front_porch: 10
+
+    vsync_pulse_width: 10
+    vsync_back_porch: 10
+    vsync_front_porch: 10
+
+    pclk_frequency: 16MHz
+
+    reset_pin: { ch422g: ch422g_hub, number: 3 }
+
+# ─────────────────────────
+# TOUCHSCREEN
+# ─────────────────────────
+
+touchscreen:
+  - platform: gt911
+    interrupt_pin: GPIO4
+    reset_pin: { ch422g: ch422g_hub, number: 1 }
+
+# ─────────────────────────
+# FONTS
+# ─────────────────────────
+
+font:
+
+  - file: "gfonts://Bebas Neue"
+    id: font_clock
+    size: 72
+    glyphs: "0123456789:.°%- C"
+
+  - file: "gfonts://Montserrat"
+    id: font_text
+    size: 24
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzàâäéèêëîïôùûüç0123456789 .,:;!?-_%°/'+"
+
+  - file: "gfonts://Montserrat"
+    id: font_small
+    size: 16
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzàâäéèêëîïôùûüç0123456789 .,:;!?-_%°/'+"
+
+  - file: "gfonts://Material Symbols Outlined"
+    id: font_icon
+    size: 36
+    ignore_missing_glyphs: true
+    glyphs:
+      - "\ue88e"
+      - "\ue63e"
+      - "\ue816"
+      - "\ue1ff"
+      - "\ue3a6"
+      - "\ue916"
+      - "\ueb3b"   # water_drop filled
+      - "\ue766"   # schedule
+      - "\ue8b8"   # timer
+
+# ─────────────────────────
+# BLE SENSOR
+# ─────────────────────────
+
+esp32_ble_tracker:
+
+sensor:
+
+  - platform: atc_mithermometer
+    mac_address: "A4:C1:38:C9:4F:A6"
+
+    temperature:
+      id: temp_val
+      on_value:
+        then:
+          - lvgl.label.update:
+              id: lbl_temp
+              text: !lambda 'return str_sprintf("%.1f°C", x);'
+
+    humidity:
+      id: hum_val
+      on_value:
+        then:
+          - lvgl.label.update:
+              id: lbl_hum
+              text: !lambda 'return str_sprintf("%.0f%%", x);'
+
+# ─────────────────────────
+# SAINT DU JOUR
+# ArduinoJson v7 : JsonDocument (plus de DynamicJsonDocument)
+# ─────────────────────────
+
+  # ── Smart Irrigation (HASmartIrrigation v2025) ──
+  # Durées calculées par zone (secondes → converties en minutes à l'affichage)
+  # entity_id à adapter selon vos noms de zones dans Smart Irrigation
+  - platform: homeassistant
+    id: si_zone1_duree
+    entity_id: sensor.smart_irrigation_potager
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_z1_duree
+            text: !lambda |-
+              int min = (int)(x / 60);
+              if (min <= 0) return std::string("Pas d'arrosage");
+              return std::to_string(min) + " min";
+
+  - platform: homeassistant
+    id: si_zone2_duree
+    entity_id: sensor.smart_irrigation_massifs
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_z2_duree
+            text: !lambda |-
+              int min = (int)(x / 60);
+              if (min <= 0) return std::string("Pas d'arrosage");
+              return std::to_string(min) + " min";
+
+  - platform: homeassistant
+    id: si_zone3_duree
+    entity_id: sensor.smart_irrigation_gazon
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_z3_duree
+            text: !lambda |-
+              int min = (int)(x / 60);
+              if (min <= 0) return std::string("Pas d'arrosage");
+              return std::to_string(min) + " min";
+
+  - platform: homeassistant
+    id: si_zone4_duree
+    entity_id: sensor.smart_irrigation_serre_ext
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_z4_duree
+            text: !lambda |-
+              int min = (int)(x / 60);
+              if (min <= 0) return std::string("Pas d'arrosage");
+              return std::to_string(min) + " min";
+
+binary_sensor:
+  # État ON/OFF des vannes (pour coloriser l'indicateur)
+  - platform: homeassistant
+    id: vanne_zone1
+    entity_id: switch.arrosage_zone1
+    internal: true
+    on_turn_on:
+      then:
+        - lvgl.widget.update:
+            id: ind_z1
+            bg_color: 0x4CAF50
+        - lvgl.label.update:
+            id: lbl_z1_statut
+            text: "Actif"
+    on_turn_off:
+      then:
+        - lvgl.widget.update:
+            id: ind_z1
+            bg_color: 0x263238
+        - lvgl.label.update:
+            id: lbl_z1_statut
+            text: "Inactif"
+
+  - platform: homeassistant
+    id: vanne_zone2
+    entity_id: switch.arrosage_zone2
+    internal: true
+    on_turn_on:
+      then:
+        - lvgl.widget.update:
+            id: ind_z2
+            bg_color: 0x4CAF50
+        - lvgl.label.update:
+            id: lbl_z2_statut
+            text: "Actif"
+    on_turn_off:
+      then:
+        - lvgl.widget.update:
+            id: ind_z2
+            bg_color: 0x263238
+        - lvgl.label.update:
+            id: lbl_z2_statut
+            text: "Inactif"
+
+  - platform: homeassistant
+    id: vanne_zone3
+    entity_id: switch.arrosage_zone3
+    internal: true
+    on_turn_on:
+      then:
+        - lvgl.widget.update:
+            id: ind_z3
+            bg_color: 0x4CAF50
+        - lvgl.label.update:
+            id: lbl_z3_statut
+            text: "Actif"
+    on_turn_off:
+      then:
+        - lvgl.widget.update:
+            id: ind_z3
+            bg_color: 0x263238
+        - lvgl.label.update:
+            id: lbl_z3_statut
+            text: "Inactif"
+
+  - platform: homeassistant
+    id: vanne_zone4
+    entity_id: switch.arrosage_zone4
+    internal: true
+    on_turn_on:
+      then:
+        - lvgl.widget.update:
+            id: ind_z4
+            bg_color: 0x4CAF50
+        - lvgl.label.update:
+            id: lbl_z4_statut
+            text: "Actif"
+    on_turn_off:
+      then:
+        - lvgl.widget.update:
+            id: ind_z4
+            bg_color: 0x263238
+        - lvgl.label.update:
+            id: lbl_z4_statut
+            text: "Inactif"
+
+script:
+  - id: update_nameday
+    then:
+      - http_request.get:
+          url: "https://nameday.abalin.net/api/V2/today?country=fr"
+          capture_response: true
+          on_response:
+            then:
+              - lambda: |-
+                  JsonDocument doc;
+                  DeserializationError err = deserializeJson(doc, body);
+                  if (err) {
+                    ESP_LOGW("nameday", "JSON error: %s", err.c_str());
+                    return;
+                  }
+                  if (!doc["namedays"]["fr"].isNull()) {
+                    std::string name = doc["namedays"]["fr"].as<std::string>();
+                    if (!name.empty()) {
+                      lv_label_set_text(id(lbl_nameday), ("St " + name).c_str());
+                    }
+                  }
+
+# ─────────────────────────────────────────────────────────────
+# LVGL UI — Style industriel 800x480
+#
+# Layout :
+#   [Sidebar 80px | icônes nav] [Zone principale 720px]
+#
+# Onglet 0 : Serre  — horloge + temp + humidité
+# Onglet 1 : Semis  — lecteur NFC
+# Onglet 2 : Arrosage — 4 zones pilotées via HA
+#
+# Navigation : obj clickable dans la sidebar
+# Switching  : lvgl.tabview.select avec index (syntaxe v2026)
+# lvgl.widget.update pour highlight actif/inactif
+# ─────────────────────────────────────────────────────────────
+
+lvgl:
+
+  displays:
+    - main_display
+
+  bg_color: 0x101010
+
+  style_definitions:
+
+    - id: style_card
+      bg_color: 0x121212
+      border_color: 0x4682B4
+      border_width: 2
+      radius: 4
+      pad_all: 10
+
+    - id: style_value
+      text_font: font_clock
+      text_color: 0x00FF41
+
+    - id: style_section
+      text_font: font_small
+      text_color: 0x4682B4
+
+  widgets:
+
+    # ══════════════════════════
+    # SIDEBAR — 80x480 px
+    # ══════════════════════════
+    - obj:
+        x: 0
+        y: 0
+        width: 80
+        height: 480
+        bg_color: 0x0D0D0D
+        border_color: 0x4682B4
+        border_width: 1
+        radius: 0
+        pad_all: 0
+
+        widgets:
+
+          - label:
+              text: "\ue88e"
+              text_font: font_icon
+              text_color: 0x37474F
+              align: top_mid
+              y: 10
+
+          # Bouton Serre — actif par défaut
+          - obj:
+              id: nav_serre
+              x: 0
+              y: 60
+              width: 80
+              height: 80
+              clickable: true
+              bg_color: 0x1A2744
+              border_width: 0
+              radius: 0
+              pad_all: 0
+              on_click:
+                then:
+                  - lvgl.tabview.select:
+                      id: main_tabs
+                      index: 0
+                  - lvgl.widget.update:
+                      id: nav_serre
+                      bg_color: 0x1A2744
+                  - lvgl.widget.update:
+                      id: nav_semis
+                      bg_color: 0x0D0D0D
+                  - lvgl.widget.update:
+                      id: nav_arrosage
+                      bg_color: 0x0D0D0D
+              widgets:
+                - label:
+                    text: "\ue916"
+                    text_font: font_icon
+                    text_color: 0x4FC3F7
+                    align: center
+                    y: -12
+                - label:
+                    text: "Serre"
+                    text_font: font_small
+                    text_color: 0x4FC3F7
+                    align: center
+                    y: 22
+
+          # Bouton Semis — inactif par défaut
+          - obj:
+              id: nav_semis
+              x: 0
+              y: 145
+              width: 80
+              height: 80
+              clickable: true
+              bg_color: 0x0D0D0D
+              border_width: 0
+              radius: 0
+              pad_all: 0
+              on_click:
+                then:
+                  - lvgl.tabview.select:
+                      id: main_tabs
+                      index: 1
+                  - lvgl.widget.update:
+                      id: nav_semis
+                      bg_color: 0x1A2744
+                  - lvgl.widget.update:
+                      id: nav_serre
+                      bg_color: 0x0D0D0D
+                  - lvgl.widget.update:
+                      id: nav_arrosage
+                      bg_color: 0x0D0D0D
+              widgets:
+                - label:
+                    text: "\ue3a6"
+                    text_font: font_icon
+                    text_color: 0x546E7A
+                    align: center
+                    y: -12
+                - label:
+                    text: "Semis"
+                    text_font: font_small
+                    text_color: 0x546E7A
+                    align: center
+                    y: 22
+
+
+          # Bouton Arrosage — inactif par défaut
+          - obj:
+              id: nav_arrosage
+              x: 0
+              y: 230
+              width: 80
+              height: 80
+              clickable: true
+              bg_color: 0x0D0D0D
+              border_width: 0
+              radius: 0
+              pad_all: 0
+              on_click:
+                then:
+                  - lvgl.tabview.select:
+                      id: main_tabs
+                      index: 2
+                  - lvgl.widget.update:
+                      id: nav_arrosage
+                      bg_color: 0x1A2744
+                  - lvgl.widget.update:
+                      id: nav_serre
+                      bg_color: 0x0D0D0D
+                  - lvgl.widget.update:
+                      id: nav_semis
+                      bg_color: 0x0D0D0D
+              widgets:
+                - label:
+                    text: "\ueb3b"
+                    text_font: font_icon
+                    text_color: 0x546E7A
+                    align: center
+                    y: -12
+                - label:
+                    text: "Eau"
+                    text_font: font_small
+                    text_color: 0x546E7A
+                    align: center
+                    y: 22
+
+          # Icône Wi-Fi bas de sidebar
+          - label:
+              text: "\ue63e"
+              text_font: font_icon
+              text_color: 0x4682B4
+              align: bottom_mid
+              y: -15
+
+    # ══════════════════════════
+    # TABVIEW — 720x480 px
+    # ══════════════════════════
+    - tabview:
+        id: main_tabs
+        x: 80
+        y: 0
+        width: 720
+        height: 480
+
+        tabs:
+
+          # ──────────────────
+          # ONGLET 0 — SERRE
+          # ──────────────────
+          - name: "Serre"
+            widgets:
+
+              # Header horloge + saint du jour
+              - obj:
+                  x: 10
+                  y: 10
+                  width: 700
+                  height: 100
+                  styles: style_card
+                  widgets:
+
+                    - label:
+                        id: lbl_time
+                        text: "00:00"
+                        styles: style_value
+                        align: left_mid
+                        x: 20
+
+                    - label:
+                        id: lbl_nameday
+                        text: "Chargement..."
+                        text_font: font_text
+                        text_color: 0x90A4AE
+                        align: left_mid
+                        x: 240
+
+                    - label:
+                        text: "\ue63e"
+                        text_font: font_icon
+                        text_color: 0x4682B4
+                        align: right_mid
+                        x: -20
+
+              # Bloc Température
+              - obj:
+                  x: 10
+                  y: 120
+                  width: 340
+                  height: 340
+                  styles: style_card
+                  widgets:
+
+                    - label:
+                        text: "TEMPERATURE"
+                        styles: style_section
+                        align: top_mid
+                        y: 10
+
+                    - label:
+                        text: "\ue1ff"
+                        text_font: font_icon
+                        text_color: 0xFF5722
+                        align: center
+                        y: -50
+
+                    - label:
+                        id: lbl_temp
+                        text: "--.-°C"
+                        styles: style_value
+                        align: center
+                        y: 30
+
+                    - label:
+                        text: "Sonde ATC Bluetooth"
+                        text_font: font_small
+                        text_color: 0x37474F
+                        align: bottom_mid
+                        y: -12
+
+              # Bloc Humidité
+              - obj:
+                  x: 360
+                  y: 120
+                  width: 350
+                  height: 340
+                  styles: style_card
+                  widgets:
+
+                    - label:
+                        text: "HUMIDITE"
+                        styles: style_section
+                        align: top_mid
+                        y: 10
+
+                    - label:
+                        text: "\ue816"
+                        text_font: font_icon
+                        text_color: 0x2196F3
+                        align: center
+                        y: -50
+
+                    - label:
+                        id: lbl_hum
+                        text: "--%"
+                        styles: style_value
+                        align: center
+                        y: 30
+
+                    - label:
+                        text: "Sonde ATC Bluetooth"
+                        text_font: font_small
+                        text_color: 0x37474F
+                        align: bottom_mid
+                        y: -12
+
+          # ──────────────────
+          # ONGLET 1 — SEMIS / NFC
+          # ──────────────────
+          - name: "Semis"
+            widgets:
+
+              - obj:
+                  x: 10
+                  y: 10
+                  width: 700
+                  height: 60
+                  styles: style_card
+                  widgets:
+                    - label:
+                        text: "\ue3a6"
+                        text_font: font_icon
+                        text_color: 0x00FF41
+                        align: left_mid
+                        x: 16
+                    - label:
+                        text: "LECTEUR NFC"
+                        text_font: font_text
+                        text_color: 0x4682B4
+                        align: left_mid
+                        x: 65
+
+              - obj:
+                  x: 10
+                  y: 80
+                  width: 700
+                  height: 380
+                  styles: style_card
+                  widgets:
+
+                    - label:
+                        text: "\ue3a6"
+                        text_font: font_icon
+                        text_color: 0x4682B4
+                        align: center
+                        y: -70
+
+                    - label:
+                        id: lbl_plant_info
+                        text: "Approchez un pic NFC"
+                        text_font: font_text
+                        text_color: 0x90A4AE
+                        align: center
+                        y: 10
+
+                    - label:
+                        text: "En attente de lecture..."
+                        text_font: font_small
+                        text_color: 0x37474F
+                        align: center
+                        y: 55
+
+          # ──────────────────────────────────────
+          # ONGLET 2 — ARROSAGE (Smart Irrigation + vannes via HA)
+          #
+          # sensor.smart_irrigation_[zone] → durée calculée (secondes)
+          # switch.arrosage_zoneX          → contrôle vanne manuelle
+          # smart_irrigation.reset_bucket  → à appeler après arrosage
+          # ──────────────────────────────────────
+          - name: "Arrosage"
+            widgets:
+
+              # ── HEADER ──
+              - obj:
+                  x: 10
+                  y: 8
+                  width: 700
+                  height: 50
+                  styles: style_card
+                  widgets:
+                    - label:
+                        text: "\ueb3b"
+                        text_font: font_icon
+                        text_color: 0x2196F3
+                        align: left_mid
+                        x: 12
+                    - label:
+                        text: "ARROSAGE INTELLIGENT"
+                        text_font: font_text
+                        text_color: 0x4682B4
+                        align: left_mid
+                        x: 60
+                    - label:
+                        text: "\ue766"
+                        text_font: font_icon
+                        text_color: 0x37474F
+                        align: right_mid
+                        x: -16
+
+              # ── ZONE 1 — Potager ──
+              - obj:
+                  x: 10
+                  y: 68
+                  width: 340
+                  height: 190
+                  styles: style_card
+                  widgets:
+                    - label:
+                        text: "ZONE 1 — Potager"
+                        styles: style_section
+                        align: top_left
+                        x: 36
+                        y: 4
+                    # Indicateur actif (rond coloré)
+                    - obj:
+                        id: ind_z1
+                        x: 8
+                        y: 6
+                        width: 22
+                        height: 22
+                        radius: 11
+                        bg_color: 0x263238
+                        border_width: 0
+                        pad_all: 0
+                    # Statut textuel
+                    - label:
+                        id: lbl_z1_statut
+                        text: "Inactif"
+                        text_font: font_small
+                        text_color: 0x546E7A
+                        align: top_left
+                        x: 36
+                        y: 26
+                    # Durée Smart Irrigation
+                    - label:
+                        text: "\ue8b8"
+                        text_font: font_icon
+                        text_color: 0x1565C0
+                        align: top_left
+                        x: 8
+                        y: 46
+                    - label:
+                        id: lbl_z1_duree
+                        text: "Calcul en cours..."
+                        text_font: font_small
+                        text_color: 0x1E88E5
+                        align: top_left
+                        x: 42
+                        y: 54
+                    # Bouton ON manuel
+                    - obj:
+                        x: 8
+                        y: -52
+                        width: 90
+                        height: 38
+                        align: bottom_left
+                        clickable: true
+                        bg_color: 0x1B5E20
+                        border_color: 0x4CAF50
+                        border_width: 1
+                        radius: 4
+                        pad_all: 0
+                        on_click:
+                          then:
+                            - homeassistant.service:
+                                service: switch.turn_on
+                                data:
+                                  entity_id: switch.arrosage_zone1
+                        widgets:
+                          - label:
+                              text: "ON"
+                              text_font: font_small
+                              text_color: 0x4CAF50
+                              align: center
+                    # Bouton OFF manuel
+                    - obj:
+                        x: 106
+                        y: -52
+                        width: 90
+                        height: 38
+                        align: bottom_left
+                        clickable: true
+                        bg_color: 0x1A0000
+                        border_color: 0xF44336
+                        border_width: 1
+                        radius: 4
+                        pad_all: 0
+                        on_click:
+                          then:
+                            - homeassistant.service:
+                                service: switch.turn_off
+                                data:
+                                  entity_id: switch.arrosage_zone1
+                        widgets:
+                          - label:
+                              text: "OFF"
+                              text_font: font_small
+                              text_color: 0xF44336
+                              align: center
+                    # Bouton Reset bucket
+                    - obj:
+                        x: 204
+                        y: -52
+                        width: 110
+                        height: 38
+                        align: bottom_left
+                        clickable: true
+                        bg_color: 0x0D1B2A
+                        border_color: 0x37474F
+                        border_width: 1
+                        radius: 4
+                        pad_all: 0
+                        on_click:
+                          then:
+                            - homeassistant.service:
+                                service: smart_irrigation.reset_bucket
+                                data:
+                                  entity_id: sensor.smart_irrigation_potager
+                        widgets:
+                          - label:
+                              text: "Reset"
+                              text_font: font_small
+                              text_color: 0x78909C
+                              align: center
+
+              # ── ZONE 2 — Massifs ──
+              - obj:
+                  x: 360
+                  y: 68
+                  width: 350
+                  height: 190
+                  styles: style_card
+                  widgets:
+                    - label:
+                        text: "ZONE 2 — Massifs"
+                        styles: style_section
+                        align: top_left
+                        x: 36
+                        y: 4
+                    - obj:
+                        id: ind_z2
+                        x: 8
+                        y: 6
+                        width: 22
+                        height: 22
+                        radius: 11
+                        bg_color: 0x263238
+                        border_width: 0
+                        pad_all: 0
+                    - label:
+                        id: lbl_z2_statut
+                        text: "Inactif"
+                        text_font: font_small
+                        text_color: 0x546E7A
+                        align: top_left
+                        x: 36
+                        y: 26
+                    - label:
+                        text: "\ue8b8"
+                        text_font: font_icon
+                        text_color: 0x1565C0
+                        align: top_left
+                        x: 8
+                        y: 46
+                    - label:
+                        id: lbl_z2_duree
+                        text: "Calcul en cours..."
+                        text_font: font_small
+                        text_color: 0x1E88E5
+                        align: top_left
+                        x: 42
+                        y: 54
+                    - obj:
+                        x: 8
+                        y: -52
+                        width: 90
+                        height: 38
+                        align: bottom_left
+                        clickable: true
+                        bg_color: 0x1B5E20
+                        border_color: 0x4CAF50
+                        border_width: 1
+                        radius: 4
+                        pad_all: 0
+                        on_click:
+                          then:
+                            - homeassistant.service:
+                                service: switch.turn_on
+                                data:
+                                  entity_id: switch.arrosage_zone2
+                        widgets:
+                          - label:
+                              text: "ON"
+                              text_font: font_small
+                              text_color: 0x4CAF50
+                              align: center
+                    - obj:
+                        x: 106
+                        y: -52
+                        width: 90
+                        height: 38
+                        align: bottom_left
+                        clickable: true
+                        bg_color: 0x1A0000
+                        border_color: 0xF44336
+                        border_width: 1
+                        radius: 4
+                        pad_all: 0
+                        on_click:
+                          then:
+                            - homeassistant.service:
+                                service: switch.turn_off
+                                data:
+                                  entity_id: switch.arrosage_zone2
+                        widgets:
+                          - label:
+                              text: "OFF"
+                              text_font: font_small
+                              text_color: 0xF44336
+                              align: center
+                    - obj:
+                        x: 204
+                        y: -52
+                        width: 120
+                        height: 38
+                        align: bottom_left
+                        clickable: true
+                        bg_color: 0x0D1B2A
+                        border_color: 0x37474F
+                        border_width: 1
+                        radius: 4
+                        pad_all: 0
+                        on_click:
+                          then:
+                            - homeassistant.service:
+                                service: smart_irrigation.reset_bucket
+                                data:
+                                  entity_id: sensor.smart_irrigation_massifs
+                        widgets:
+                          - label:
+                              text: "Reset"
+                              text_font: font_small
+                              text_color: 0x78909C
+                              align: center
+
+              # ── ZONE 3 — Gazon ──
+              - obj:
+                  x: 10
+                  y: 268
+                  width: 340
+                  height: 190
+                  styles: style_card
+                  widgets:
+                    - label:
+                        text: "ZONE 3 — Gazon"
+                        styles: style_section
+                        align: top_left
+                        x: 36
+                        y: 4
+                    - obj:
+                        id: ind_z3
+                        x: 8
+                        y: 6
+                        width: 22
+                        height: 22
+                        radius: 11
+                        bg_color: 0x263238
+                        border_width: 0
+                        pad_all: 0
+                    - label:
+                        id: lbl_z3_statut
+                        text: "Inactif"
+                        text_font: font_small
+                        text_color: 0x546E7A
+                        align: top_left
+                        x: 36
+                        y: 26
+                    - label:
+                        text: "\ue8b8"
+                        text_font: font_icon
+                        text_color: 0x1565C0
+                        align: top_left
+                        x: 8
+                        y: 46
+                    - label:
+                        id: lbl_z3_duree
+                        text: "Calcul en cours..."
+                        text_font: font_small
+                        text_color: 0x1E88E5
+                        align: top_left
+                        x: 42
+                        y: 54
+                    - obj:
+                        x: 8
+                        y: -52
+                        width: 90
+                        height: 38
+                        align: bottom_left
+                        clickable: true
+                        bg_color: 0x1B5E20
+                        border_color: 0x4CAF50
+                        border_width: 1
+                        radius: 4
+                        pad_all: 0
+                        on_click:
+                          then:
+                            - homeassistant.service:
+                                service: switch.turn_on
+                                data:
+                                  entity_id: switch.arrosage_zone3
+                        widgets:
+                          - label:
+                              text: "ON"
+                              text_font: font_small
+                              text_color: 0x4CAF50
+                              align: center
+                    - obj:
+                        x: 106
+                        y: -52
+                        width: 90
+                        height: 38
+                        align: bottom_left
+                        clickable: true
+                        bg_color: 0x1A0000
+                        border_color: 0xF44336
+                        border_width: 1
+                        radius: 4
+                        pad_all: 0
+                        on_click:
+                          then:
+                            - homeassistant.service:
+                                service: switch.turn_off
+                                data:
+                                  entity_id: switch.arrosage_zone3
+                        widgets:
+                          - label:
+                              text: "OFF"
+                              text_font: font_small
+                              text_color: 0xF44336
+                              align: center
+                    - obj:
+                        x: 204
+                        y: -52
+                        width: 110
+                        height: 38
+                        align: bottom_left
+                        clickable: true
+                        bg_color: 0x0D1B2A
+                        border_color: 0x37474F
+                        border_width: 1
+                        radius: 4
+                        pad_all: 0
+                        on_click:
+                          then:
+                            - homeassistant.service:
+                                service: smart_irrigation.reset_bucket
+                                data:
+                                  entity_id: sensor.smart_irrigation_gazon
+                        widgets:
+                          - label:
+                              text: "Reset"
+                              text_font: font_small
+                              text_color: 0x78909C
+                              align: center
+
+              # ── ZONE 4 — Serre ext. ──
+              - obj:
+                  x: 360
+                  y: 268
+                  width: 350
+                  height: 190
+                  styles: style_card
+                  widgets:
+                    - label:
+                        text: "ZONE 4 — Serre ext."
+                        styles: style_section
+                        align: top_left
+                        x: 36
+                        y: 4
+                    - obj:
+                        id: ind_z4
+                        x: 8
+                        y: 6
+                        width: 22
+                        height: 22
+                        radius: 11
+                        bg_color: 0x263238
+                        border_width: 0
+                        pad_all: 0
+                    - label:
+                        id: lbl_z4_statut
+                        text: "Inactif"
+                        text_font: font_small
+                        text_color: 0x546E7A
+                        align: top_left
+                        x: 36
+                        y: 26
+                    - label:
+                        text: "\ue8b8"
+                        text_font: font_icon
+                        text_color: 0x1565C0
+                        align: top_left
+                        x: 8
+                        y: 46
+                    - label:
+                        id: lbl_z4_duree
+                        text: "Calcul en cours..."
+                        text_font: font_small
+                        text_color: 0x1E88E5
+                        align: top_left
+                        x: 42
+                        y: 54
+                    - obj:
+                        x: 8
+                        y: -52
+                        width: 90
+                        height: 38
+                        align: bottom_left
+                        clickable: true
+                        bg_color: 0x1B5E20
+                        border_color: 0x4CAF50
+                        border_width: 1
+                        radius: 4
+                        pad_all: 0
+                        on_click:
+                          then:
+                            - homeassistant.service:
+                                service: switch.turn_on
+                                data:
+                                  entity_id: switch.arrosage_zone4
+                        widgets:
+                          - label:
+                              text: "ON"
+                              text_font: font_small
+                              text_color: 0x4CAF50
+                              align: center
+                    - obj:
+                        x: 106
+                        y: -52
+                        width: 90
+                        height: 38
+                        align: bottom_left
+                        clickable: true
+                        bg_color: 0x1A0000
+                        border_color: 0xF44336
+                        border_width: 1
+                        radius: 4
+                        pad_all: 0
+                        on_click:
+                          then:
+                            - homeassistant.service:
+                                service: switch.turn_off
+                                data:
+                                  entity_id: switch.arrosage_zone4
+                        widgets:
+                          - label:
+                              text: "OFF"
+                              text_font: font_small
+                              text_color: 0xF44336
+                              align: center
+                    - obj:
+                        x: 204
+                        y: -52
+                        width: 120
+                        height: 38
+                        align: bottom_left
+                        clickable: true
+                        bg_color: 0x0D1B2A
+                        border_color: 0x37474F
+                        border_width: 1
+                        radius: 4
+                        pad_all: 0
+                        on_click:
+                          then:
+                            - homeassistant.service:
+                                service: smart_irrigation.reset_bucket
+                                data:
+                                  entity_id: sensor.smart_irrigation_serre_ext
+                        widgets:
+                          - label:
+                              text: "Reset"
+                              text_font: font_small
+                              text_color: 0x78909C
+                              align: center
