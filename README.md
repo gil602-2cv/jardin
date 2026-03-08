@@ -33,8 +33,9 @@ Configuration ESPHome complète pour un système de surveillance et d'arrosage i
 │ [Serre] │ Onglet 0 — SERRE                                        │
 │ [Semis] │   · Horloge HH:MM (SNTP, fuseau Europe/Paris)           │
 │ [Eau]   │   · Saint du jour (API nameday.abalin.net)              │
-│         │   · Température BLE : --.-°C                            │
-│ [WiFi]  │   · Humidité BLE    : ---%                              │
+│         │   · Température BLE (int.) : --.-°C                    │
+│ [WiFi]  │   · Température ext. (HA) : --.-°C                      │
+│         │   · Humidité BLE          : ---%                        │
 │         ├──────────────────────────────────────────────────────────┤
 │         │ Onglet 1 — SEMIS                                        │
 │         │   · Zone NFC / infos plantes (placeholder)              │
@@ -77,6 +78,7 @@ Configuration ESPHome complète pour un système de surveillance et d'arrosage i
 | `sensor.smart_irrigation_massifs` | Smart Irrigation | Durée Zone 2 |
 | `sensor.smart_irrigation_gazon` | Smart Irrigation | Durée Zone 3 |
 | `sensor.smart_irrigation_serre_ext` | Smart Irrigation | Durée Zone 4 |
+| `sensor.auriol_4ld5661_136_temperature` | Home Assistant | Température extérieure (onglet Serre) |
 | `switch.arrosage_zone1` à `zone4` | arrosage-jardin | État vanne (indicateur coloré) |
 
 ### Services HA appelés depuis l'écran

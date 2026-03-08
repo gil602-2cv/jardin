@@ -192,6 +192,16 @@ sensor:
               id: lbl_hum
               text: !lambda 'return str_sprintf("%.0f%%", x);'
 
+  - platform: homeassistant
+    id: temp_ext_ha
+    entity_id: sensor.auriol_4ld5661_136_temperature
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_temp_ext
+            text: !lambda 'return str_sprintf("EXT. %.1f°C", x);'
+
 # ─────────────────────────
 # SAINT DU JOUR
 # ArduinoJson v7 : JsonDocument (plus de DynamicJsonDocument)
@@ -632,11 +642,19 @@ lvgl:
                         y: 30
 
                     - label:
-                        text: "Sonde ATC Bluetooth"
+                        text: "INT. Sonde ATC Bluetooth"
                         text_font: font_small
                         text_color: 0x37474F
                         align: bottom_mid
-                        y: -12
+                        y: -26
+
+                    - label:
+                        id: lbl_temp_ext
+                        text: "EXT. --.-°C"
+                        text_font: font_small
+                        text_color: 0x4682B4
+                        align: bottom_mid
+                        y: -6
 
               # Bloc Humidité
               - obj:
