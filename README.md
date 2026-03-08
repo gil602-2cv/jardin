@@ -183,7 +183,7 @@ Pour générer une clé API ESPHome :
 python3 -c "import secrets, base64; print(base64.b64encode(secrets.token_bytes(32)).decode())"
 ```
 
-### 2bis. Validation de configuration (recommandé)
+### 2 bis. Validation de configuration (recommandée)
 
 Avant le premier flash, valider les deux fichiers pour détecter les erreurs YAML / composants manquants :
 
@@ -192,11 +192,13 @@ esphome config armoire-semis.yaml
 esphome config arrosage-jardin.yaml
 ```
 
-Si `secrets.yaml` n'existe pas encore, dupliquer le template puis compléter les valeurs :
+Si `secrets.yaml` n'existe pas encore, l'initialiser depuis le template **sans écraser un fichier existant** :
 
 ```bash
-cp secrets.yaml.template secrets.yaml
+cp -n secrets.yaml.template secrets.yaml
 ```
+
+> Option si la commande `esphome` n'est pas installée localement : exécuter ces vérifications depuis l'add-on ESPHome de Home Assistant ou un conteneur Docker ESPHome.
 
 ### 3. Flasher armoire-semis
 
