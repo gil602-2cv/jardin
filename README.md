@@ -2,6 +2,8 @@
 
 Configuration ESPHome complète pour un système de surveillance et d'arrosage intelligent basé sur **Home Assistant**, comprenant un écran tactile 7" et un contrôleur d'arrosage 4 zones.
 
+**Dernière mise à jour : 12/03/2026**
+
 ---
 
 ## 📦 Devices
